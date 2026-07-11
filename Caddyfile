@@ -1,5 +1,6 @@
-# Local/dev: plain HTTP on :80. For production, replace ":80" with your real
-# domain (e.g. "bets.example.com") — Caddy will provision HTTPS automatically.
+# Local/dev: plain HTTP on :80. On the VPS this is overridden (see the
+# Caddyfile.prod pulled in via docker-compose.override.yml) to use a real
+# domain so Caddy can auto-provision HTTPS via Let's Encrypt.
 :80 {
 	handle /api/* {
 		reverse_proxy api:8000

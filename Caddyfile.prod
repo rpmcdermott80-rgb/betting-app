@@ -1,0 +1,14 @@
+# Production Caddyfile — used only on the deployed VPS via docker-compose.override.yml.
+# A real domain (even a free nip.io one) lets Caddy auto-provision HTTPS through
+# Let's Encrypt; a bare ":80" like the local dev Caddyfile can't get a real cert.
+betting.43.229.60.218.nip.io {
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		root * /srv
+		file_server
+		try_files {path} /index.html
+	}
+}
