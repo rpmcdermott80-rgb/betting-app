@@ -50,16 +50,19 @@ function contextLine(tip: Tip): string | null {
   return null;
 }
 
-// Only horse/greyhound tips point at a real scheduled event we'll later scrape a
-// result for, so only those can be auto-settled. Player-prop/multi tips are
-// snapshots of a player's most recent already-played game — there's no future
-// fixture for the app to check, so those bets need manual win/loss/void in
-// Track Record.
+// Horse/greyhound tips point at a real scheduled event we'll later scrape a
+// result for. Player-prop tips aren't tied to a future fixture, but once the
+// player's next real game is scraped we can check the actual stat against the
+// tipped line — so those auto-settle too, just on a less predictable timeline.
+// Only multi tips (a basket of several legs) still need manual settling.
 function autoSettleNote(vertical: string): string | null {
   if (vertical === "horse_racing" || vertical === "greyhound") {
     return "Auto-settles once this race result comes in.";
   }
-  return "Settle manually in Track Record once the game's played — no upcoming-fixture data to auto-check this against.";
+  if (vertical === "player_prop") {
+    return "Auto-settles once this player's next game is scraped.";
+  }
+  return "Settle manually in Track Record — combines multiple legs, not auto-checked yet.";
 }
 
 function TakeBetForm({ tip, onTaken }: { tip: Tip; onTaken: () => void }) {

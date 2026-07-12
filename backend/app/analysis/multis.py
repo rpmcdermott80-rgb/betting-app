@@ -10,6 +10,8 @@ is behind commercial bot-defence). It's a strength indicator for stacking form, 
 priced bet. Multis are recomputed each run from the current props.
 """
 
+import datetime as dt
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -18,6 +20,11 @@ from app.models import Event, ModelVersion, Player, Tip, UserBet
 MODEL_VERSION_LABEL = "props-multi-v1"
 MIN_LEG_HIT_RATE = 0.8
 MULTI_SIZES = (4, 3)  # build a 4-leg and a 3-leg from the best available legs
+
+# Same staleness cutoff as tips.py's player-prop display — a leg anchored to a
+# game this old is a retired/delisted player's snapshot, not live form, and has
+# no business being stacked into a "current" multi.
+LEG_STALE_DAYS = 270
 
 
 def _get_or_create_model_version(db: Session) -> ModelVersion:
@@ -64,10 +71,16 @@ def generate_multis(db: Session) -> int:
         synchronize_session=False
     )
 
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=LEG_STALE_DAYS)
     prop_tips = list(
         db.scalars(
             select(Tip)
-            .where(Tip.vertical == "player_prop", Tip.confidence_score >= MIN_LEG_HIT_RATE)
+            .join(Event, Tip.event_id == Event.id)
+            .where(
+                Tip.vertical == "player_prop",
+                Tip.confidence_score >= MIN_LEG_HIT_RATE,
+                Event.start_time >= cutoff,
+            )
             .order_by(Tip.confidence_score.desc())
         )
     )

@@ -1,9 +1,11 @@
+import datetime as dt
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import Event, Greyhound, Horse, Player, Result, Tip, Venue
+from app.models import Event, Greyhound, Horse, Player, PlayerGameLog, Result, Tip, Venue
 from app.schemas import TipOut
 
 router = APIRouter(prefix="/api/tips", tags=["tips"])
@@ -17,6 +19,14 @@ VERTICALS = {
 
 ENTITY_MODELS = {"horse": Horse, "greyhound": Greyhound, "player": Player}
 RACING_VERTICALS = {"horse_racing", "greyhound"}
+
+# A player_prop tip is a snapshot of "recent form" as of its anchor game. Once a
+# player hasn't played in this long, that snapshot no longer represents anything
+# current (retired/delisted players' years-old tips were otherwise sitting forever
+# alongside live ones, sorted by confidence, with no way to tell them apart) — long
+# enough to survive a normal AFL/NRL off-season gap, short enough to exclude
+# genuinely stale entries.
+PLAYER_PROP_STALE_DAYS = 270
 
 
 def _racing_result(tip: Tip, event: Event | None, db: Session) -> tuple[str, int | None]:
@@ -37,6 +47,32 @@ def _racing_result(tip: Tip, event: Event | None, db: Session) -> tuple[str, int
     return ("won" if result.finish_position == 1 else "lost"), result.finish_position
 
 
+def _player_prop_result(tip: Tip, db: Session) -> tuple[str, int | None]:
+    """A player_prop tip is a snapshot of recent form, not tied to a specific
+    upcoming fixture — so "did this hit" means checking the player's next
+    *actually played* game once our own scrapers log it, not a scheduled event.
+    Real data only: if no later game has been logged yet, stays pending."""
+    anchor_event = db.get(Event, tip.event_id) if tip.event_id else None
+    if anchor_event is None or tip.line is None:
+        return "pending", None
+    next_log = db.scalar(
+        select(PlayerGameLog)
+        .join(Event, PlayerGameLog.event_id == Event.id)
+        .where(
+            PlayerGameLog.player_id == tip.entity_id,
+            PlayerGameLog.stat_type == tip.market_type,
+            Event.start_time > anchor_event.start_time,
+        )
+        .order_by(Event.start_time.asc())
+    )
+    if next_log is None:
+        return "pending", None
+    value = float(next_log.stat_value)
+    threshold = float(tip.line)
+    hit = value >= threshold if tip.recommended_side == "over" else value < threshold
+    return ("won" if hit else "lost"), None
+
+
 def _enrich(tip: Tip, db: Session) -> TipOut:
     entity_name, entity_team = None, None
     model = ENTITY_MODELS.get(tip.entity_type)
@@ -55,9 +91,12 @@ def _enrich(tip: Tip, db: Session) -> TipOut:
             venue = db.get(Venue, event.venue_id)
             venue_name = venue.name if venue else None
 
-    result_status, finish_position = (
-        _racing_result(tip, event, db) if tip.vertical in RACING_VERTICALS else ("pending", None)
-    )
+    if tip.vertical in RACING_VERTICALS:
+        result_status, finish_position = _racing_result(tip, event, db)
+    elif tip.vertical == "player_prop":
+        result_status, finish_position = _player_prop_result(tip, db)
+    else:
+        result_status, finish_position = "pending", None
 
     return TipOut(
         id=tip.id,
@@ -89,6 +128,9 @@ def _tips_for(vertical: str, db: Session) -> list[TipOut]:
         .where(Tip.vertical == vertical)
         .order_by(Tip.confidence_score.desc().nullslast(), Tip.generated_at.desc())
     )
+    if vertical == "player_prop":
+        cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=PLAYER_PROP_STALE_DAYS)
+        stmt = stmt.join(Event, Tip.event_id == Event.id).where(Event.start_time >= cutoff)
     return [_enrich(t, db) for t in db.scalars(stmt)]
 
 
