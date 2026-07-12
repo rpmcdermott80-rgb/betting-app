@@ -15,6 +15,14 @@ strike rate prominently (including per-match "Won ✓"/"Lost ✗" labels), but p
 app's rule that a tipster's own claim is never trusted, none of that is read here —
 outcomes are only ever settled from our own data (app/analysis/tipster_settle.py).
 
+get_urls() only returns pages not already in raw_scrapes for this source (2026-07-12
+fix) — the first backfill genuinely needed the full sitemap, but every run after
+that only needs whatever new match pages have appeared since. Before this fix every
+refresh re-fetched all ~700 pages regardless, which is exactly the kind of wasteful
+re-scrape this project has caught and fixed before (see feedback_scraper_dedup_writes
+memory) — this one just slipped through since the dedup was at the write layer
+(upsert_tipster_pick) rather than the fetch layer.
+
 Alphr's own team-name spellings occasionally differ slightly from the official
 names our afltables.com/rugbyleagueproject.org scrapers store (e.g. "GWS GIANTS"
 vs "GWS", "Carlton Blues" vs "Carlton") — matching.find_event_for_teams already
@@ -39,8 +47,10 @@ import re
 
 import httpx
 from bs4 import BeautifulSoup
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models import RawScrape
 from app.scrapers.base import USER_AGENT, BaseScraper
 from app.scrapers.tipsters.matching import find_event_for_teams
 from app.scrapers.util import upsert_tipster_pick
@@ -74,6 +84,19 @@ class AlphrFootballScraper(BaseScraper):
         resp = httpx.get(SITEMAP_URL, timeout=30, follow_redirects=True, headers={"User-Agent": USER_AGENT})
         resp.raise_for_status()
         urls = sorted(set(re.findall(rf"<loc>({re.escape(self.match_url_prefix)}[^<]+)</loc>", resp.text)))
+
+        # Skip any match page we've already fetched, regardless of whether it
+        # produced a stored TipsterPick — a page that didn't qualify for the
+        # edge/price filter still has no reason to be re-fetched, since Alphr
+        # never edits a published match's numbers after the fact. Checked
+        # against raw_scrapes (every fetch attempt, success or fail), not
+        # tipster_picks, since a below-threshold page never gets a pick row at
+        # all and would otherwise be re-fetched on every single run forever.
+        already_fetched = set(
+            db.scalars(select(RawScrape.url).where(RawScrape.source_id == self.source_id))
+        )
+        urls = [u for u in urls if u not in already_fetched]
+
         if limit is not None:
             urls = urls[:limit]
         return urls
