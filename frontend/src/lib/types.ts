@@ -16,6 +16,8 @@ export interface Tip {
   start_time: string | null;
   stat_basis: Record<string, unknown> | null;
   generated_at: string;
+  result_status: "pending" | "won" | "lost";
+  finish_position: number | null;
 }
 
 export interface UserBet {

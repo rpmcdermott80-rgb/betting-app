@@ -3,7 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import Event, Greyhound, Horse, Player, Tip, Venue
+from app.models import Event, Greyhound, Horse, Player, Result, Tip, Venue
 from app.schemas import TipOut
 
 router = APIRouter(prefix="/api/tips", tags=["tips"])
@@ -16,6 +16,25 @@ VERTICALS = {
 }
 
 ENTITY_MODELS = {"horse": Horse, "greyhound": Greyhound, "player": Player}
+RACING_VERTICALS = {"horse_racing", "greyhound"}
+
+
+def _racing_result(tip: Tip, event: Event | None, db: Session) -> tuple[str, int | None]:
+    """Real outcome for a win-market racing tip, computed the same way
+    settle_bets.py settles a bet on it — shown on every tip regardless of
+    whether the user actually took a bet on it."""
+    if event is None or event.status != "completed":
+        return "pending", None
+    result = db.scalar(
+        select(Result).where(
+            Result.event_id == tip.event_id,
+            Result.entity_type == tip.entity_type,
+            Result.entity_id == tip.entity_id,
+        )
+    )
+    if result is None or result.finish_position is None:
+        return "pending", None
+    return ("won" if result.finish_position == 1 else "lost"), result.finish_position
 
 
 def _enrich(tip: Tip, db: Session) -> TipOut:
@@ -36,6 +55,10 @@ def _enrich(tip: Tip, db: Session) -> TipOut:
             venue = db.get(Venue, event.venue_id)
             venue_name = venue.name if venue else None
 
+    result_status, finish_position = (
+        _racing_result(tip, event, db) if tip.vertical in RACING_VERTICALS else ("pending", None)
+    )
+
     return TipOut(
         id=tip.id,
         vertical=tip.vertical,
@@ -54,6 +77,8 @@ def _enrich(tip: Tip, db: Session) -> TipOut:
         start_time=start_time,
         stat_basis=tip.stat_basis,
         generated_at=tip.generated_at,
+        result_status=result_status,
+        finish_position=finish_position,
     )
 
 

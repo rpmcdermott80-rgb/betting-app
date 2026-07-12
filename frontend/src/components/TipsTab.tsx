@@ -16,6 +16,24 @@ function ratingLabel(vertical: string): string {
   return "form rating";
 }
 
+function ordinal(n: number): string {
+  const s = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return `${n}${s[(v - 20) % 10] || s[v] || s[0]}`;
+}
+
+// Real outcome once the race has actually run — shown on every tip, not just
+// ones a bet was taken on, so "did this pick actually win" never requires
+// digging into Track Record.
+function resultBadge(tip: Tip): { label: string; className: string } | null {
+  if (tip.result_status === "won") return { label: "WON", className: "bg-emerald-900 text-emerald-300" };
+  if (tip.result_status === "lost") {
+    const label = tip.finish_position ? `LOST — ${ordinal(tip.finish_position)}` : "LOST";
+    return { label, className: "bg-red-900 text-red-300" };
+  }
+  return null;
+}
+
 function marketLine(tip: Tip): string {
   if (tip.market_type === tip.recommended_side) return "WIN";
   return `${tip.market_type} ${tip.recommended_side}${tip.line !== null ? ` ${tip.line}` : ""}`;
@@ -139,6 +157,7 @@ export default function TipsTab({ endpoint, emptyReason }: { endpoint: string; e
         const context = contextLine(tip);
         const rating = pct(tip.confidence_score);
         const taken = takenTipIds.has(tip.id);
+        const result = resultBadge(tip);
         return (
           <div key={tip.id} className="rounded-lg border border-slate-800 bg-slate-900 p-4">
             <div className="flex items-start justify-between gap-3">
@@ -146,6 +165,11 @@ export default function TipsTab({ endpoint, emptyReason }: { endpoint: string; e
                 <span className="font-medium">{title}</span>
                 {isRacing && tip.entity_name && (
                   <span className="ml-2 text-xs uppercase tracking-wide text-emerald-400">WIN</span>
+                )}
+                {result && (
+                  <span className={`ml-2 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${result.className}`}>
+                    {result.label}
+                  </span>
                 )}
                 {context && <p className="mt-0.5 text-xs text-slate-400">{context}</p>}
               </div>

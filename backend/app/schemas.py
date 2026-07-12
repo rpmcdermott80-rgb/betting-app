@@ -21,6 +21,8 @@ class TipOut(BaseModel):
     start_time: dt.datetime | None
     stat_basis: dict | None
     generated_at: dt.datetime
+    result_status: str = "pending"  # pending | won | lost — real outcome, once the race has run
+    finish_position: int | None = None
 
 
 class UserBetIn(BaseModel):
