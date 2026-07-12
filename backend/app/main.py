@@ -4,7 +4,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.refresh import run_full_refresh, watchdog_tick
+from app.db import SessionLocal
+from app.refresh import reconcile_orphaned_runs, run_full_refresh, watchdog_tick
 from app.routers import checklist, data_health, health, refresh, tips, tipster_tips, track_record
 
 scheduler = BackgroundScheduler()
@@ -12,6 +13,16 @@ scheduler = BackgroundScheduler()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # A restart (deploy, crash) kills any in-flight refresh subprocess outright —
+    # without this, a run still marked "running" from before the restart blocks
+    # every future refresh forever, since nothing else would ever tell the app
+    # that process is gone.
+    db = SessionLocal()
+    try:
+        reconcile_orphaned_runs(db)
+    finally:
+        db.close()
+
     # Every 120 minutes: full pipeline (all scrapers, tipster scrapers, real-result
     # settlement for every tip vertical, then tip/multi regeneration) — one cadence
     # instead of a once-nightly run + a separate tipster-only cron, since a 2-hourly

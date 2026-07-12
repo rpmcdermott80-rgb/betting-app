@@ -75,6 +75,24 @@ def _pid_alive(pid: int | None) -> bool:
     return True
 
 
+def reconcile_orphaned_runs(db: Session) -> None:
+    """Called once at API startup. A process restart (deploy, crash, manual
+    restart) kills every subprocess that belonged to the old process tree — so
+    any run still marked "running" at this point is guaranteed dead, regardless
+    of what its recorded PID happens to look like in the new process (a fresh
+    container can reuse low PID numbers, which would otherwise fool a plain
+    liveness check into thinking an unrelated process is the old run). Without
+    this, a deploy during an in-flight refresh leaves is_refresh_running() stuck
+    True forever, silently blocking every future manual or scheduled refresh."""
+    orphaned = db.query(RefreshRun).filter(RefreshRun.status == "running").all()
+    for run in orphaned:
+        run.status = "failed"
+        run.finished_at = dt.datetime.now(dt.timezone.utc)
+        run.summary = {**(run.summary or {}), "note": "marked failed: orphaned by an API restart mid-run"}
+    if orphaned:
+        db.commit()
+
+
 def check_and_recover_stuck_runs(db: Session) -> None:
     """Finds runs stuck well past a normal duration, kills the subprocess if it's
     still alive, and marks the run failed — so a hang self-heals without anyone
