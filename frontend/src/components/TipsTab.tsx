@@ -62,7 +62,7 @@ function autoSettleNote(vertical: string): string | null {
   if (vertical === "player_prop") {
     return "Auto-settles once this player's next game is scraped.";
   }
-  return "Settle manually in Track Record — combines multiple legs, not auto-checked yet.";
+  return "Auto-settles once every leg has a result — one leg missing its line loses the multi.";
 }
 
 // Real hit count from actually-checked results only ("pending" tips haven't run

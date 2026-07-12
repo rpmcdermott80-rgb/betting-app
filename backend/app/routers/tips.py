@@ -73,6 +73,29 @@ def _player_prop_result(tip: Tip, db: Session) -> tuple[str, int | None]:
     return ("won" if hit else "lost"), None
 
 
+def _multi_result(tip: Tip, db: Session) -> tuple[str, int | None]:
+    """A multi is only as good as its weakest leg — resolve each leg via the same
+    next-real-game check the Player Props tab uses. Won only once every leg has
+    won; lost as soon as any single leg loses (the rest no longer matter); still
+    pending otherwise, even if some legs have already resolved."""
+    legs = (tip.stat_basis or {}).get("legs") or []
+    if not legs:
+        return "pending", None
+    statuses = []
+    for leg in legs:
+        leg_tip = db.get(Tip, leg.get("tip_id")) if leg.get("tip_id") else None
+        if leg_tip is None:
+            statuses.append("pending")
+            continue
+        status, _ = _player_prop_result(leg_tip, db)
+        statuses.append(status)
+    if any(s == "lost" for s in statuses):
+        return "lost", None
+    if all(s == "won" for s in statuses):
+        return "won", None
+    return "pending", None
+
+
 def _enrich(tip: Tip, db: Session) -> TipOut:
     entity_name, entity_team, entity_sport = None, None, None
     model = ENTITY_MODELS.get(tip.entity_type)
@@ -96,6 +119,8 @@ def _enrich(tip: Tip, db: Session) -> TipOut:
         result_status, finish_position = _racing_result(tip, event, db)
     elif tip.vertical == "player_prop":
         result_status, finish_position = _player_prop_result(tip, db)
+    elif tip.vertical == "multi":
+        result_status, finish_position = _multi_result(tip, db)
     else:
         result_status, finish_position = "pending", None
 

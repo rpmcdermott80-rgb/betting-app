@@ -6,8 +6,9 @@ player_prop tips are anchored to a player's *most recent already-played* game
 (we don't scrape upcoming AFL/NRL fixtures) rather than a future one — but once
 our own scrapers log that player's *next* real game, we can check whether the
 tipped threshold actually hit, same idea as checking a race result. multi tips
-combine several player-prop legs into one basket and aren't resolved here yet —
-those still need manual settling in Track Record.
+combine several player-prop legs into one basket — resolved by checking each
+leg the same way: won only once every leg has won, lost as soon as any single
+leg loses.
 """
 
 import datetime as dt
@@ -17,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Event, PlayerGameLog, Result, Tip, UserBet
 
-AUTO_SETTLEABLE_VERTICALS = {"horse_racing", "greyhound", "player_prop"}
+AUTO_SETTLEABLE_VERTICALS = {"horse_racing", "greyhound", "player_prop", "multi"}
 
 
 def _resolve_outcome(tip: Tip, result: Result) -> str | None:
@@ -52,6 +53,21 @@ def _resolve_player_prop(tip: Tip, db: Session) -> str | None:
     return "win" if hit else "loss"
 
 
+def _resolve_multi(tip: Tip, db: Session) -> str | None:
+    legs = (tip.stat_basis or {}).get("legs") or []
+    if not legs:
+        return None
+    outcomes = []
+    for leg in legs:
+        leg_tip = db.get(Tip, leg.get("tip_id")) if leg.get("tip_id") else None
+        outcomes.append(_resolve_player_prop(leg_tip, db) if leg_tip is not None else None)
+    if any(o == "loss" for o in outcomes):
+        return "loss"
+    if all(o == "win" for o in outcomes):
+        return "win"
+    return None  # at least one leg still pending
+
+
 def settle_pending_bets(db: Session) -> dict:
     summary = {"settled_win": 0, "settled_loss": 0, "awaiting_result": 0, "not_auto_settleable": 0}
 
@@ -67,6 +83,16 @@ def settle_pending_bets(db: Session) -> dict:
 
         if tip.vertical == "player_prop":
             outcome = _resolve_player_prop(tip, db)
+            if outcome is None:
+                summary["awaiting_result"] += 1
+                continue
+            bet.outcome = outcome
+            bet.settled_at = dt.datetime.now(dt.timezone.utc)
+            summary[f"settled_{outcome}"] += 1
+            continue
+
+        if tip.vertical == "multi":
+            outcome = _resolve_multi(tip, db)
             if outcome is None:
                 summary["awaiting_result"] += 1
                 continue
