@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Event, MatchResult
 from app.scrapers.base import USER_AGENT, BaseScraper
+from app.scrapers.tipsters.matching import NRL_TEAM_ALIASES, strip_nrl_round_prefix
 from app.scrapers.util import (
     get_or_create_event,
     get_or_create_player,
@@ -58,6 +59,19 @@ SCORE_LINE_RE = re.compile(
 
 def _strip_ordinal(date_text: str) -> str:
     return re.sub(r"(\d+)(st|nd|rd|th)", r"\1", date_text)
+
+
+def _is_real_nrl_club(team_name: str) -> bool:
+    """Team roster pages discovery pulls from can list matches from other
+    competitions their players also feature in — confirmed real contamination:
+    Queensland Cup feeder-club games (Redcliffe Dolphins, Souths Logan Magpies,
+    Burleigh Bears...), Super League fixtures (a Betfred World Club Challenge
+    game had real current NRL players' stats attached), and representative/All
+    Stars matches. None of those are real NRL premiership games, so none should
+    ever end up in a player's "recent NRL form" window. Only the 17 real 2026
+    NRL clubs (after stripping a themed-round sponsor prefix, which is legitimate
+    — "Magic Round Cronulla Sutherland Sharks" really is NRL) pass."""
+    return strip_nrl_round_prefix(team_name) in NRL_TEAM_ALIASES
 
 
 class RugbyLeagueProjectScraper(BaseScraper):
@@ -128,6 +142,26 @@ class RugbyLeagueProjectScraper(BaseScraper):
         except ValueError:
             return 0
 
+        # Require a parsed score line before trusting anything else on the page —
+        # if we can't even identify the two teams, we have no basis to validate
+        # this is a real NRL game at all, so don't create an Event or store any
+        # player stats against it.
+        score_match = SCORE_LINE_RE.search(summary_soup.get_text(" ", strip=True))
+        if not score_match:
+            return 0
+
+        home_team, home_score, away_score, away_team = score_match.groups()
+        home_team, away_team = home_team.strip(), away_team.strip()
+
+        # Team roster pages' discovery pulls from can list matches from other
+        # competitions those players also feature in (Queensland Cup, Super
+        # League, representative/All Stars games) — confirmed real contamination
+        # of current NRL players' game logs. Reject anything that isn't both
+        # teams being one of the 17 real NRL clubs, rather than silently
+        # absorbing it into "recent NRL form."
+        if not (_is_real_nrl_club(home_team) and _is_real_nrl_club(away_team)):
+            return 0
+
         # rugbyleagueproject.org sometimes surfaces the same real match under more
         # than one /matches/<id> URL (see module docstring — match IDs are assigned
         # for the whole season's draw upfront, and this project has confirmed real
@@ -136,24 +170,15 @@ class RugbyLeagueProjectScraper(BaseScraper):
         # already have, silently double-counting every player's game log. Same
         # real-world date + both team names is a safer identity than the URL, so
         # check that first before falling back to the URL-keyed lookup/creation.
-        score_match = SCORE_LINE_RE.search(summary_soup.get_text(" ", strip=True))
-        home_team = away_team = home_score = away_score = None
-        if score_match:
-            home_team, home_score, away_score, away_team = score_match.groups()
-            home_team, away_team = home_team.strip(), away_team.strip()
-
-        event = None
-        if home_team and away_team:
-            existing_result = db.scalar(
-                select(MatchResult).join(Event, Event.id == MatchResult.event_id).where(
-                    Event.sport == "nrl",
-                    Event.start_time == start_time,
-                    MatchResult.home_team == home_team,
-                    MatchResult.away_team == away_team,
-                )
+        existing_result = db.scalar(
+            select(MatchResult).join(Event, Event.id == MatchResult.event_id).where(
+                Event.sport == "nrl",
+                Event.start_time == start_time,
+                MatchResult.home_team == home_team,
+                MatchResult.away_team == away_team,
             )
-            if existing_result is not None:
-                event = db.get(Event, existing_result.event_id)
+        )
+        event = db.get(Event, existing_result.event_id) if existing_result is not None else None
 
         if event is None:
             event = get_or_create_event(
@@ -166,9 +191,7 @@ class RugbyLeagueProjectScraper(BaseScraper):
             )
 
         rows_written = 0
-        if score_match and upsert_match_result(
-            db, event.id, home_team, away_team, int(home_score), int(away_score)
-        ):
+        if upsert_match_result(db, event.id, home_team, away_team, int(home_score), int(away_score)):
             rows_written += 1
 
         stats_soup = BeautifulSoup(data["stats_html"], "lxml")

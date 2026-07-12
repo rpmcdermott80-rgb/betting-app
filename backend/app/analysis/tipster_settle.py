@@ -26,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Event, MatchResult, Result, TipsterPick
-from app.scrapers.tipsters.matching import find_event_for_teams, team_names_match
+from app.scrapers.tipsters.matching import find_event_for_teams, same_team
 
 RACING_SPORTS = {"horse_racing", "greyhound"}
 FOOTBALL_SPORTS = {"afl", "nrl"}
@@ -61,9 +61,12 @@ def _resolve_football(pick: TipsterPick, db: Session) -> str | None:
     if match_result.home_score == match_result.away_score:
         return "void"
     winner = match_result.home_team if match_result.home_score > match_result.away_score else match_result.away_team
-    # Substring match, not exact equality — see team_names_match's docstring for
-    # the real bug this fixes (e.g. "Adelaide" vs "Adelaide Crows" never matched).
-    return "win" if team_names_match(winner, pick.recommended_side) else "loss"
+    # Alias-aware match, not plain substring — see same_team's docstring for the
+    # real bugs this fixes (e.g. "Adelaide" vs "Adelaide Crows" never matched
+    # under exact equality; "GWS GIANTS" vs stored "Greater Western Sydney" and
+    # "Cronulla Sharks" vs stored "Cronulla Sutherland Sharks" never matched
+    # under plain substring containment either).
+    return "win" if same_team(winner, pick.recommended_side, pick.sport) else "loss"
 
 
 def _try_reresolve_football(pick: TipsterPick, db: Session) -> bool:
