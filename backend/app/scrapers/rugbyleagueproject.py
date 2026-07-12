@@ -26,8 +26,10 @@ from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models import Event, MatchResult
 from app.scrapers.base import USER_AGENT, BaseScraper
 from app.scrapers.util import (
     get_or_create_event,
@@ -126,23 +128,48 @@ class RugbyLeagueProjectScraper(BaseScraper):
         except ValueError:
             return 0
 
-        event = get_or_create_event(
-            db,
-            external_key="rlp_match_url",
-            external_value=canonical_url,
-            vertical="player_prop",
-            sport="nrl",
-            start_time=start_time,
-        )
-
-        rows_written = 0
+        # rugbyleagueproject.org sometimes surfaces the same real match under more
+        # than one /matches/<id> URL (see module docstring — match IDs are assigned
+        # for the whole season's draw upfront, and this project has confirmed real
+        # duplicate captures of the same fixture under two different numeric IDs).
+        # A raw URL-keyed dedup would then create a second Event for a match we
+        # already have, silently double-counting every player's game log. Same
+        # real-world date + both team names is a safer identity than the URL, so
+        # check that first before falling back to the URL-keyed lookup/creation.
         score_match = SCORE_LINE_RE.search(summary_soup.get_text(" ", strip=True))
+        home_team = away_team = home_score = away_score = None
         if score_match:
             home_team, home_score, away_score, away_team = score_match.groups()
-            if upsert_match_result(
-                db, event.id, home_team.strip(), away_team.strip(), int(home_score), int(away_score)
-            ):
-                rows_written += 1
+            home_team, away_team = home_team.strip(), away_team.strip()
+
+        event = None
+        if home_team and away_team:
+            existing_result = db.scalar(
+                select(MatchResult).join(Event, Event.id == MatchResult.event_id).where(
+                    Event.sport == "nrl",
+                    Event.start_time == start_time,
+                    MatchResult.home_team == home_team,
+                    MatchResult.away_team == away_team,
+                )
+            )
+            if existing_result is not None:
+                event = db.get(Event, existing_result.event_id)
+
+        if event is None:
+            event = get_or_create_event(
+                db,
+                external_key="rlp_match_url",
+                external_value=canonical_url,
+                vertical="player_prop",
+                sport="nrl",
+                start_time=start_time,
+            )
+
+        rows_written = 0
+        if score_match and upsert_match_result(
+            db, event.id, home_team, away_team, int(home_score), int(away_score)
+        ):
+            rows_written += 1
 
         stats_soup = BeautifulSoup(data["stats_html"], "lxml")
 
