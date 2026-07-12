@@ -9,6 +9,10 @@ changes.
 """
 
 import datetime as dt
+import os
+import signal
+import subprocess
+import sys
 
 from sqlalchemy.orm import Session
 
@@ -52,32 +56,91 @@ SCRAPER_LIMITS = {
     "rlp": 100,
 }
 
-STALE_RUN_HOURS = 2
+# Real full runs take ~12 minutes end to end. This is generous headroom above
+# that, not the old 2-hour ceiling — the whole point of the watchdog is to
+# catch a hung run long before a human on their phone would notice.
+WATCHDOG_STALE_MINUTES = 25
+
+
+def _pid_alive(pid: int | None) -> bool:
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists, just owned by someone else — still alive.
+        return True
+    return True
+
+
+def check_and_recover_stuck_runs(db: Session) -> None:
+    """Finds runs stuck well past a normal duration, kills the subprocess if it's
+    still alive, and marks the run failed — so a hang self-heals without anyone
+    needing to notice and restart the API container by hand."""
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=WATCHDOG_STALE_MINUTES)
+    stuck = (
+        db.query(RefreshRun)
+        .filter(RefreshRun.status == "running", RefreshRun.started_at < cutoff)
+        .all()
+    )
+    for run in stuck:
+        if _pid_alive(run.pid):
+            try:
+                os.kill(run.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        run.status = "failed"
+        run.finished_at = dt.datetime.now(dt.timezone.utc)
+        run.summary = {
+            **(run.summary or {}),
+            "note": f"watchdog: killed stuck run after {WATCHDOG_STALE_MINUTES}+ min with no completion",
+        }
+    if stuck:
+        db.commit()
+
+
+def watchdog_tick() -> None:
+    """Scheduled independently in main.py so recovery happens on a timer, not only
+    when a request happens to call is_refresh_running."""
+    db = SessionLocal()
+    try:
+        check_and_recover_stuck_runs(db)
+    finally:
+        db.close()
 
 
 def is_refresh_running(db: Session) -> bool:
+    check_and_recover_stuck_runs(db)
     latest = db.query(RefreshRun).order_by(RefreshRun.started_at.desc()).first()
-    if latest is None or latest.status != "running":
-        return False
-    age = dt.datetime.now(dt.timezone.utc) - latest.started_at
-    if age > dt.timedelta(hours=STALE_RUN_HOURS):
-        # A previous run never finished (e.g. the process crashed) — don't block forever.
-        latest.status = "failed"
-        latest.finished_at = dt.datetime.now(dt.timezone.utc)
-        latest.summary = {**(latest.summary or {}), "note": "marked failed: stale/stuck run"}
-        db.commit()
-        return False
-    return True
+    return latest is not None and latest.status == "running"
 
 
 def start_refresh_run(db: Session) -> RefreshRun:
     """Synchronously creates the run row so callers get a real id immediately;
-    the actual scraping work happens separately via execute_refresh."""
+    the actual scraping work happens separately via execute_refresh, launched as
+    a subprocess (see launch_refresh_subprocess) whose PID gets recorded on this
+    row so the watchdog can tell a genuinely hung run from a live one."""
     run = RefreshRun(status="running")
     db.add(run)
     db.commit()
     db.refresh(run)
     return run
+
+
+def record_run_pid(db: Session, run_id: int, pid: int) -> None:
+    run = db.get(RefreshRun, run_id)
+    run.pid = pid
+    db.commit()
+
+
+def launch_refresh_subprocess(run_id: int) -> subprocess.Popen:
+    """Runs execute_refresh in its own OS process rather than an in-process thread —
+    a hang in there (this project has seen a few, never fully root-caused) then only
+    kills that one process, not the whole API server, and the watchdog above can
+    detect and kill it cleanly by PID instead of requiring an API restart."""
+    return subprocess.Popen([sys.executable, "-m", "app.run_refresh_job", str(run_id)])
 
 
 def execute_refresh(run_id: int) -> None:
@@ -150,15 +213,17 @@ def execute_refresh(run_id: int) -> None:
 
 
 def run_full_refresh() -> None:
-    """Convenience wrapper for the scheduler: creates its own run row and executes
-    it in one call (no separate thread needed, since APScheduler already runs this
-    off the main event loop)."""
+    """Convenience wrapper for the scheduler: creates the run row, launches the
+    subprocess, and waits for it — same path as the manual "Refresh now" button,
+    so the nightly cron gets the same watchdog protection against a hang."""
     db = SessionLocal()
     try:
         run = start_refresh_run(db)
+        proc = launch_refresh_subprocess(run.id)
+        record_run_pid(db, run.id, proc.pid)
     finally:
         db.close()
-    execute_refresh(run.id)
+    proc.wait()
 
 
 def run_tipster_refresh() -> None:

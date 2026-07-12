@@ -4,7 +4,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.refresh import run_full_refresh, run_tipster_refresh
+from app.refresh import run_full_refresh, run_tipster_refresh, watchdog_tick
 from app.routers import checklist, data_health, health, refresh, tips, tipster_tips, track_record
 
 scheduler = BackgroundScheduler()
@@ -19,6 +19,9 @@ async def lifespan(app: FastAPI):
     # stated latest posting times for the morning's meetings; the main nightly run
     # above is too early in the day to ever catch same-day tipster picks.
     scheduler.add_job(run_tipster_refresh, "cron", hour=0, minute=45, id="tipster_refresh")
+    # Runs independently of any user request so a hung refresh (manual or nightly)
+    # self-heals even if nobody opens the app to trigger the check.
+    scheduler.add_job(watchdog_tick, "interval", minutes=5, id="refresh_watchdog")
     scheduler.start()
     yield
     scheduler.shutdown(wait=False)

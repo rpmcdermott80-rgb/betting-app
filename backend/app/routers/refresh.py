@@ -1,11 +1,14 @@
-import threading
-
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import RefreshRun
-from app.refresh import execute_refresh, is_refresh_running, start_refresh_run
+from app.refresh import (
+    is_refresh_running,
+    launch_refresh_subprocess,
+    record_run_pid,
+    start_refresh_run,
+)
 from app.schemas import RefreshRunOut, RefreshTriggerOut
 
 router = APIRouter(prefix="/api/refresh", tags=["refresh"])
@@ -23,8 +26,9 @@ def trigger_refresh(db: Session = Depends(get_db)):
         return RefreshTriggerOut(status="already_running", run_id=latest.id)
 
     run = start_refresh_run(db)
-    # Scrapers are sync (httpx/SQLAlchemy), so run in a background thread rather than
-    # blocking the request — this is a single-user tool, a plain thread is enough,
-    # no task queue needed.
-    threading.Thread(target=execute_refresh, args=(run.id,), daemon=True).start()
+    # A real OS subprocess rather than an in-process thread — a hang only kills this
+    # one process (the watchdog in app/refresh.py detects and kills it by PID), not
+    # the whole API server the way an in-process thread hang used to.
+    proc = launch_refresh_subprocess(run.id)
+    record_run_pid(db, run.id, proc.pid)
     return RefreshTriggerOut(status="started", run_id=run.id)

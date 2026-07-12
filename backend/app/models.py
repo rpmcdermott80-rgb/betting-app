@@ -237,6 +237,10 @@ class RefreshRun(Base):
     finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="running")  # running | completed | failed
     summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # PID of the OS subprocess actually doing the work (see app/run_refresh_job.py) —
+    # lets the watchdog tell a genuinely hung run from one that's still alive and
+    # working, and kill it cleanly instead of restarting the whole API process.
+    pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class FormStart(Base):
