@@ -4,7 +4,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.refresh import run_full_refresh, run_tipster_refresh, watchdog_tick
+from app.refresh import run_full_refresh, watchdog_tick
 from app.routers import checklist, data_health, health, refresh, tips, tipster_tips, track_record
 
 scheduler = BackgroundScheduler()
@@ -12,15 +12,15 @@ scheduler = BackgroundScheduler()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 18:00 UTC ≈ 4am AEST (UTC+10) — a rough approximation good enough for a
-    # personal AU-only tool, same as the timezone handling in the scrapers.
-    scheduler.add_job(run_full_refresh, "cron", hour=18, minute=0, id="nightly_refresh")
-    # 00:45 UTC ≈ 10:45am AEST/QLD — after freehorseracingtipsaustralia.com.au's
-    # stated latest posting times for the morning's meetings; the main nightly run
-    # above is too early in the day to ever catch same-day tipster picks.
-    scheduler.add_job(run_tipster_refresh, "cron", hour=0, minute=45, id="tipster_refresh")
-    # Runs independently of any user request so a hung refresh (manual or nightly)
-    # self-heals even if nobody opens the app to trigger the check.
+    # Every 120 minutes: full pipeline (all scrapers, tipster scrapers, real-result
+    # settlement for every tip vertical, then tip/multi regeneration) — one cadence
+    # instead of a once-nightly run + a separate tipster-only cron, since a 2-hourly
+    # tick already lands within 2 hours of any tipster site's posting time regardless
+    # of exact time of day. Real runs take ~12-16 min, well inside the window; each
+    # scraper is incremental (checks what's already fetched), so extra runs are cheap.
+    scheduler.add_job(run_full_refresh, "interval", minutes=120, id="full_refresh_interval")
+    # Runs independently of any user request so a hung refresh self-heals even if
+    # nobody opens the app to trigger the check.
     scheduler.add_job(watchdog_tick, "interval", minutes=5, id="refresh_watchdog")
     scheduler.start()
     yield

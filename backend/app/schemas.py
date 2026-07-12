@@ -11,6 +11,7 @@ class TipOut(BaseModel):
     entity_id: int
     entity_name: str | None
     entity_team: str | None
+    sport: str | None = None  # afl | nrl, for player_prop tips only
     market_type: str
     line: float | None
     recommended_side: str

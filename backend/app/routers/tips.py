@@ -74,13 +74,14 @@ def _player_prop_result(tip: Tip, db: Session) -> tuple[str, int | None]:
 
 
 def _enrich(tip: Tip, db: Session) -> TipOut:
-    entity_name, entity_team = None, None
+    entity_name, entity_team, entity_sport = None, None, None
     model = ENTITY_MODELS.get(tip.entity_type)
     if model is not None and tip.entity_id:
         entity = db.get(model, tip.entity_id)
         if entity is not None:
             entity_name = entity.name
             entity_team = getattr(entity, "team", None)
+            entity_sport = getattr(entity, "sport", None)
 
     venue_name, race_number, start_time = None, None, None
     event = db.get(Event, tip.event_id) if tip.event_id else None
@@ -106,6 +107,7 @@ def _enrich(tip: Tip, db: Session) -> TipOut:
         entity_id=tip.entity_id,
         entity_name=entity_name,
         entity_team=entity_team,
+        sport=entity_sport,
         market_type=tip.market_type,
         line=float(tip.line) if tip.line is not None else None,
         recommended_side=tip.recommended_side,

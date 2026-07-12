@@ -65,6 +65,37 @@ function autoSettleNote(vertical: string): string | null {
   return "Settle manually in Track Record — combines multiple legs, not auto-checked yet.";
 }
 
+// Real hit count from actually-checked results only ("pending" tips haven't run
+// yet, so they can't count either way) — shown even at 0/0 so it's clear the tab
+// is being checked, not just silent.
+function summarize(list: Tip[]): string {
+  const won = list.filter((t) => t.result_status === "won").length;
+  const total = list.length;
+  if (total === 0) return "no results in yet";
+  return `${won}/${total} hit (${Math.round((won / total) * 100)}%)`;
+}
+
+function HitCountSummary({ tips }: { tips: Tip[] }) {
+  const settled = tips.filter((t) => t.result_status !== "pending");
+
+  // Player props cover both AFL and NRL — break the count out per sport as well
+  // as overall, same as the Tipster tabs do per source.
+  const hasSportSplit = tips.some((t) => t.sport);
+  if (hasSportSplit) {
+    const afl = tips.filter((t) => t.sport === "afl");
+    const nrl = tips.filter((t) => t.sport === "nrl");
+    return (
+      <div className="mb-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400">
+        {afl.length > 0 && <span>AFL: {summarize(afl.filter((t) => t.result_status !== "pending"))}</span>}
+        {nrl.length > 0 && <span>NRL: {summarize(nrl.filter((t) => t.result_status !== "pending"))}</span>}
+        <span>Overall: {summarize(settled)}</span>
+      </div>
+    );
+  }
+
+  return <div className="mb-3 text-xs text-slate-400">Checked so far: {summarize(settled)}</div>;
+}
+
 function TakeBetForm({ tip, onTaken }: { tip: Tip; onTaken: () => void }) {
   const [open, setOpen] = useState(false);
   const [stake, setStake] = useState("");
@@ -148,6 +179,7 @@ export default function TipsTab({ endpoint, emptyReason }: { endpoint: string; e
 
   return (
     <div className="space-y-3">
+      <HitCountSummary tips={data} />
       {data.map((tip) => {
         const isRacing = tip.vertical === "horse_racing" || tip.vertical === "greyhound";
         const legCount = Array.isArray((tip.stat_basis as { legs?: unknown[] })?.legs)

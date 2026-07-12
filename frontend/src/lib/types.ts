@@ -6,6 +6,7 @@ export interface Tip {
   entity_id: number;
   entity_name: string | null;
   entity_team: string | null;
+  sport: string | null;
   market_type: string;
   line: number | null;
   recommended_side: string;
